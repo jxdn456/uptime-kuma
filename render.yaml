@@ -4,7 +4,20 @@ services:
     env: node
     buildCommand: npm install
     startCommand: |
-      # 用环境变量替换 db-config.json 里的占位符
-      envsubst < data/db-config.json > data/db-config.render.json && \
-      mv data/db-config.render.json data/db-config.json && \
+      echo "🔹 Checking environment variables..."
+      echo "UPTIME_KUMA_DB_TYPE=$UPTIME_KUMA_DB_TYPE"
+      echo "UPTIME_KUMA_DB_HOSTNAME=$UPTIME_KUMA_DB_HOSTNAME"
+      echo "UPTIME_KUMA_DB_PORT=$UPTIME_KUMA_DB_PORT"
+      echo "UPTIME_KUMA_DB_USERNAME=$UPTIME_KUMA_DB_USERNAME"
+      echo "UPTIME_KUMA_DB_PASSWORD=$UPTIME_KUMA_DB_PASSWORD"
+      echo "UPTIME_KUMA_DB_NAME=$UPTIME_KUMA_DB_NAME"
+
+      echo "🔹 Replacing db-config.json template..."
+      envsubst < data/db-config.json > data/db-config.render.json
+      mv data/db-config.render.json data/db-config.json
+
+      echo "🔹 Final db-config.json:"
+      cat data/db-config.json
+
+      echo "🔹 Starting Uptime Kuma..."
       node server/server.js
