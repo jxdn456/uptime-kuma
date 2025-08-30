@@ -1,0 +1,8 @@
+{
+  "type": "${UPTIME_KUMA_DB_TYPE}",
+  "host": "${UPTIME_KUMA_DB_HOSTNAME}",
+  "port": "${UPTIME_KUMA_DB_PORT}",
+  "user": "${UPTIME_KUMA_DB_USERNAME}",
+  "password": "${UPTIME_KUMA_DB_PASSWORD}",
+  "database": "${UPTIME_KUMA_DB_NAME}"
+}
