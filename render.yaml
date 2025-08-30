@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: uptime-kuma
+    env: node
+    buildCommand: npm install
+    startCommand: |
+      # 用环境变量替换 db-config.json 里的占位符
+      envsubst < data/db-config.json > data/db-config.render.json && \
+      mv data/db-config.render.json data/db-config.json && \
+      node server/server.js
