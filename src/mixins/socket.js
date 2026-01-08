@@ -45,6 +45,7 @@ export default {
             avgPingList: { },
             uptimeList: { },
             tlsInfoList: {},
+            domainInfoList: {},
             notificationList: [],
             dockerHostList: [],
             remoteBrowserList: [],
@@ -250,6 +251,11 @@ export default {
                 this.tlsInfoList[monitorID] = JSON.parse(data);
             });
 
+            socket.on("domainInfo", (monitorID, daysRemaining, expiresOn) => {
+                this.domainInfoList[monitorID] = { daysRemaining: daysRemaining,
+                    expiresOn: expiresOn };
+            });
+
             socket.on("connect_error", (err) => {
                 console.error(`Failed to connect to the backend. Socket.io connect_error: ${err.message}`);
                 this.connectionErrorMsg = `${this.$t("Cannot connect to the socket server.")} [${err}] ${this.$t("Reconnecting...")}`;
@@ -341,24 +347,32 @@ export default {
         },
 
         /**
+         * Apply translation to a message if possible
+         * @param {string | {key: string, values: object}} msg Message to translate
+         * @returns {string} Translated message
+         */
+        applyTranslation(msg) {
+            if (msg != null && typeof msg === "object") {
+                return this.$t(msg.key, msg.values);
+            } else {
+                return this.$t(msg);
+            }
+        },
+
+        /**
          * Show success or error toast dependent on response status code
-         * @param {object} res Response object
+         * @param {{ok:boolean, msg: string, msgi18n: false} | {ok:boolean, msg: string|{key: string, values: object}, msgi18n: true}} res Response object
          * @returns {void}
          */
         toastRes(res) {
-            let msg = res.msg;
             if (res.msgi18n) {
-                if (msg != null && typeof msg === "object") {
-                    msg = this.$t(msg.key, msg.values);
-                } else {
-                    msg = this.$t(msg);
-                }
+                res.msg = this.applyTranslation(res.msg);
             }
 
             if (res.ok) {
-                toast.success(msg);
+                toast.success(res.msg);
             } else {
-                toast.error(msg);
+                toast.error(res.msg);
             }
         },
 
@@ -602,11 +616,12 @@ export default {
         /**
          * Delete monitor by ID
          * @param {number} monitorID ID of monitor to delete
+         * @param {boolean} deleteChildren Whether to delete child monitors (for groups)
          * @param {socketCB} callback Callback for socket response
          * @returns {void}
          */
-        deleteMonitor(monitorID, callback) {
-            socket.emit("deleteMonitor", monitorID, callback);
+        deleteMonitor(monitorID, deleteChildren, callback) {
+            socket.emit("deleteMonitor", monitorID, deleteChildren, callback);
         },
 
         /**

@@ -1,4 +1,3 @@
-const tcpp = require("tcp-ping");
 const ping = require("@louislam/ping");
 const { R } = require("redbean-node");
 const {
@@ -7,20 +6,12 @@ const {
     PING_COUNT_DEFAULT, PING_PER_REQUEST_TIMEOUT_DEFAULT
 } = require("../src/util");
 const passwordHash = require("./password-hash");
-const { Resolver } = require("dns");
 const iconv = require("iconv-lite");
 const chardet = require("chardet");
 const chroma = require("chroma-js");
-const mssql = require("mssql");
-const { Client } = require("pg");
-const postgresConParse = require("pg-connection-string").parse;
-const mysql = require("mysql2");
 const { NtlmClient } = require("./modules/axios-ntlm/lib/ntlmClient.js");
 const { Settings } = require("./settings");
-const grpc = require("@grpc/grpc-js");
-const protojs = require("protobufjs");
-const radiusClient = require("node-radius-client");
-const redis = require("redis");
+const RadiusClient = require("./radius-client");
 const oidc = require("openid-client");
 const tls = require("tls");
 const { exists } = require("fs");
@@ -97,33 +88,6 @@ exports.getOidcTokenClientCredentials = async (tokenEndpoint, clientId, clientSe
         grantParams.audience = audience;
     }
     return await client.grant(grantParams);
-};
-
-/**
- * Send TCP request to specified hostname and port
- * @param {string} hostname Hostname / address of machine
- * @param {number} port TCP port to test
- * @returns {Promise<number>} Maximum time in ms rounded to nearest integer
- */
-exports.tcping = function (hostname, port) {
-    return new Promise((resolve, reject) => {
-        tcpp.ping({
-            address: hostname,
-            port: port,
-            attempts: 1,
-        }, function (err, data) {
-
-            if (err) {
-                reject(err);
-            }
-
-            if (data.results.length >= 1 && data.results[0].err) {
-                reject(data.results[0].err);
-            }
-
-            resolve(Math.round(data.max));
-        });
-    });
 };
 
 /**
@@ -321,162 +285,6 @@ exports.httpNtlm = function (options, ntlmOptions) {
 };
 
 /**
- * Resolves a given record using the specified DNS server
- * @param {string} hostname The hostname of the record to lookup
- * @param {string} resolverServer The DNS server to use
- * @param {string} resolverPort Port the DNS server is listening on
- * @param {string} rrtype The type of record to request
- * @returns {Promise<(string[] | object[] | object)>} DNS response
- */
-exports.dnsResolve = function (hostname, resolverServer, resolverPort, rrtype) {
-    const resolver = new Resolver();
-    // Remove brackets from IPv6 addresses so we can re-add them to
-    // prevent issues with ::1:5300 (::1 port 5300)
-    resolverServer = resolverServer.replace("[", "").replace("]", "");
-    resolver.setServers([ `[${resolverServer}]:${resolverPort}` ]);
-    return new Promise((resolve, reject) => {
-        if (rrtype === "PTR") {
-            resolver.reverse(hostname, (err, records) => {
-                if (err) {
-                    reject(err);
-                } else {
-                    resolve(records);
-                }
-            });
-        } else {
-            resolver.resolve(hostname, rrtype, (err, records) => {
-                if (err) {
-                    reject(err);
-                } else {
-                    resolve(records);
-                }
-            });
-        }
-    });
-};
-
-/**
- * Run a query on SQL Server
- * @param {string} connectionString The database connection string
- * @param {string} query The query to validate the database with
- * @returns {Promise<(string[] | object[] | object)>} Response from
- * server
- */
-exports.mssqlQuery = async function (connectionString, query) {
-    let pool;
-    try {
-        pool = new mssql.ConnectionPool(connectionString);
-        await pool.connect();
-        if (!query) {
-            query = "SELECT 1";
-        }
-        await pool.request().query(query);
-        pool.close();
-    } catch (e) {
-        if (pool) {
-            pool.close();
-        }
-        throw e;
-    }
-};
-
-/**
- * Run a query on Postgres
- * @param {string} connectionString The database connection string
- * @param {string} query The query to validate the database with
- * @returns {Promise<(string[] | object[] | object)>} Response from
- * server
- */
-exports.postgresQuery = function (connectionString, query) {
-    return new Promise((resolve, reject) => {
-        const config = postgresConParse(connectionString);
-
-        // Fix #3868, which true/false is not parsed to boolean
-        if (typeof config.ssl === "string") {
-            config.ssl = config.ssl === "true";
-        }
-
-        if (config.password === "") {
-            // See https://github.com/brianc/node-postgres/issues/1927
-            reject(new Error("Password is undefined."));
-            return;
-        }
-        const client = new Client(config);
-
-        client.on("error", (error) => {
-            log.debug("postgres", "Error caught in the error event handler.");
-            reject(error);
-        });
-
-        client.connect((err) => {
-            if (err) {
-                reject(err);
-                client.end();
-            } else {
-                // Connected here
-                try {
-                    // No query provided by user, use SELECT 1
-                    if (!query || (typeof query === "string" && query.trim() === "")) {
-                        query = "SELECT 1";
-                    }
-
-                    client.query(query, (err, res) => {
-                        if (err) {
-                            reject(err);
-                        } else {
-                            resolve(res);
-                        }
-                        client.end();
-                    });
-                } catch (e) {
-                    reject(e);
-                    client.end();
-                }
-            }
-        });
-
-    });
-};
-
-/**
- * Run a query on MySQL/MariaDB
- * @param {string} connectionString The database connection string
- * @param {string} query The query to validate the database with
- * @param {?string} password The password to use
- * @returns {Promise<(string)>} Response from server
- */
-exports.mysqlQuery = function (connectionString, query, password = undefined) {
-    return new Promise((resolve, reject) => {
-        const connection = mysql.createConnection({
-            uri: connectionString,
-            password
-        });
-
-        connection.on("error", (err) => {
-            reject(err);
-        });
-
-        connection.query(query, (err, res) => {
-            if (err) {
-                reject(err);
-            } else {
-                if (Array.isArray(res)) {
-                    resolve("Rows: " + res.length);
-                } else {
-                    resolve("No Error, but the result is not an array. Type: " + typeof res);
-                }
-            }
-
-            try {
-                connection.end();
-            } catch (_) {
-                connection.destroy();
-            }
-        });
-    });
-};
-
-/**
  * Query radius server
  * @param {string} hostname Hostname of radius server
  * @param {string} username Username to use
@@ -498,7 +306,7 @@ exports.radius = function (
     port = 1812,
     timeout = 2500,
 ) {
-    const client = new radiusClient({
+    const client = new RadiusClient({
         host: hostname,
         hostPort: port,
         timeout: timeout,
@@ -520,44 +328,6 @@ exports.radius = function (
         } else {
             throw Error(error.message);
         }
-    });
-};
-
-/**
- * Redis server ping
- * @param {string} dsn The redis connection string
- * @param {boolean} rejectUnauthorized If false, allows unverified server certificates.
- * @returns {Promise<any>} Response from server
- */
-exports.redisPingAsync = function (dsn, rejectUnauthorized) {
-    return new Promise((resolve, reject) => {
-        const client = redis.createClient({
-            url: dsn,
-            socket: {
-                rejectUnauthorized
-            }
-        });
-        client.on("error", (err) => {
-            if (client.isOpen) {
-                client.disconnect();
-            }
-            reject(err);
-        });
-        client.connect().then(() => {
-            if (!client.isOpen) {
-                client.emit("error", new Error("connection isn't open"));
-            }
-            client.ping().then((res, err) => {
-                if (client.isOpen) {
-                    client.disconnect();
-                }
-                if (err) {
-                    reject(err);
-                } else {
-                    resolve(res);
-                }
-            }).catch(error => reject(error));
-        });
     });
 };
 
@@ -612,6 +382,7 @@ exports.setSettings = async function (type, data) {
  */
 const getDaysBetween = (validFrom, validTo) =>
     Math.round(Math.abs(+validFrom - +validTo) / 8.64e7);
+exports.getDaysBetween = getDaysBetween;
 
 /**
  * Get days remaining from a time range
@@ -621,11 +392,12 @@ const getDaysBetween = (validFrom, validTo) =>
  */
 const getDaysRemaining = (validFrom, validTo) => {
     const daysRemaining = getDaysBetween(validFrom, validTo);
-    if (new Date(validTo).getTime() < new Date().getTime()) {
+    if (new Date(validTo).getTime() < new Date(validFrom).getTime()) {
         return -daysRemaining;
     }
     return daysRemaining;
 };
+exports.getDaysRemaining = getDaysRemaining;
 
 /**
  * Fix certificate info for display
@@ -679,7 +451,7 @@ const parseCertificateInfo = function (info) {
 /**
  * Check if certificate is valid
  * @param {tls.TLSSocket} socket TLSSocket, which may or may not be connected
- * @returns {object} Object containing certificate information
+ * @returns {null | {valid: boolean, certInfo: object}} Object containing certificate information
  */
 exports.checkCertificate = function (socket) {
     let certInfoStartTime = dayjs().valueOf();
@@ -703,6 +475,30 @@ exports.checkCertificate = function (socket) {
         valid: valid,
         certInfo: parsedInfo
     };
+};
+
+/**
+ * Checks if the certificate is valid for the provided hostname.
+ * Defaults to true if feature `X509Certificate` is not available, or input is not valid.
+ * @param {Buffer} certBuffer - The certificate buffer.
+ * @param {string} hostname - The hostname to compare against.
+ * @returns {boolean} True if the certificate is valid for the provided hostname, false otherwise.
+ */
+exports.checkCertificateHostname = function (certBuffer, hostname) {
+    let X509Certificate;
+    try {
+        X509Certificate = require("node:crypto").X509Certificate;
+    } catch (_) {
+        // X509Certificate is not available in this version of Node.js
+        return true;
+    }
+
+    if (!X509Certificate || !certBuffer || !hostname) {
+        return true;
+    }
+
+    let certObject = new X509Certificate(certBuffer);
+    return certObject.checkHost(hostname) !== undefined;
 };
 
 /**
@@ -960,64 +756,6 @@ module.exports.timeObjectToLocal = (obj, timezone = undefined) => {
 };
 
 /**
- * Create gRPC client stib
- * @param {object} options from gRPC client
- * @returns {Promise<object>} Result of gRPC query
- */
-module.exports.grpcQuery = async (options) => {
-    const { grpcUrl, grpcProtobufData, grpcServiceName, grpcEnableTls, grpcMethod, grpcBody } = options;
-    const protocObject = protojs.parse(grpcProtobufData);
-    const protoServiceObject = protocObject.root.lookupService(grpcServiceName);
-    const Client = grpc.makeGenericClientConstructor({});
-    const credentials = grpcEnableTls ? grpc.credentials.createSsl() : grpc.credentials.createInsecure();
-    const client = new Client(
-        grpcUrl,
-        credentials
-    );
-    const grpcService = protoServiceObject.create(function (method, requestData, cb) {
-        const fullServiceName = method.fullName;
-        const serviceFQDN = fullServiceName.split(".");
-        const serviceMethod = serviceFQDN.pop();
-        const serviceMethodClientImpl = `/${serviceFQDN.slice(1).join(".")}/${serviceMethod}`;
-        log.debug("monitor", `gRPC method ${serviceMethodClientImpl}`);
-        client.makeUnaryRequest(
-            serviceMethodClientImpl,
-            arg => arg,
-            arg => arg,
-            requestData,
-            cb);
-    }, false, false);
-    return new Promise((resolve, _) => {
-        try {
-            return grpcService[`${grpcMethod}`](JSON.parse(grpcBody), function (err, response) {
-                const responseData = JSON.stringify(response);
-                if (err) {
-                    return resolve({
-                        code: err.code,
-                        errorMessage: err.details,
-                        data: ""
-                    });
-                } else {
-                    log.debug("monitor:", `gRPC response: ${JSON.stringify(response)}`);
-                    return resolve({
-                        code: 1,
-                        errorMessage: "",
-                        data: responseData
-                    });
-                }
-            });
-        } catch (err) {
-            return resolve({
-                code: -1,
-                errorMessage: `Error ${err}. Please review your gRPC configuration option. The service name must not include package name value, and the method name must follow camelCase format`,
-                data: ""
-            });
-        }
-
-    });
-};
-
-/**
  * Returns an array of SHA256 fingerprints for all known root certificates.
  * @returns {Set} A set of SHA256 fingerprints.
  */
@@ -1116,3 +854,19 @@ function fsExists(path) {
     });
 }
 module.exports.fsExists = fsExists;
+
+/**
+ * By default, command-exists will throw a null error if the command does not exist, which is ugly. The function makes it better.
+ * Read more: https://github.com/mathisonian/command-exists/issues/22
+ * @param {string} command Command to check
+ * @returns {Promise<boolean>} True if command exists, false otherwise
+ */
+async function commandExists(command) {
+    try {
+        await require("command-exists")(command);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+module.exports.commandExists = commandExists;

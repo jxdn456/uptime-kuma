@@ -164,9 +164,13 @@ module.exports.statusPageSocketHandler = (socket) => {
             statusPage.footer_text = config.footerText;
             statusPage.custom_css = config.customCSS;
             statusPage.show_powered_by = config.showPoweredBy;
+            statusPage.rss_title = config.rssTitle;
+            statusPage.show_only_last_heartbeat = config.showOnlyLastHeartbeat;
             statusPage.show_certificate_expiry = config.showCertificateExpiry;
             statusPage.modified_date = R.isoDateTime();
-            statusPage.google_analytics_tag_id = config.googleAnalyticsId;
+            statusPage.analytics_id = config.analyticsId;
+            statusPage.analytics_script_url = config.analyticsScriptUrl;
+            statusPage.analytics_type = config.analyticsType;
 
             await R.store(statusPage);
 
@@ -342,6 +346,8 @@ module.exports.statusPageSocketHandler = (socket) => {
                 await R.exec("DELETE FROM status_page WHERE id = ? ", [
                     statusPageID
                 ]);
+
+                apicache.clear();
 
             } else {
                 throw new Error("Status Page is not found");

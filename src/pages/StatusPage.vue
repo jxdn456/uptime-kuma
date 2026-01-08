@@ -68,9 +68,10 @@
                     <label class="form-check-label" for="show-certificate-expiry">{{ $t("showCertificateExpiry") }}</label>
                 </div>
 
-                <div v-if="false" class="my-3">
-                    <label for="password" class="form-label">{{ $t("Password") }} <sup>{{ $t("Coming Soon") }}</sup></label>
-                    <input id="password" v-model="config.password" disabled type="password" autocomplete="new-password" class="form-control">
+                <!-- Show only last heartbeat -->
+                <div class="my-3 form-check form-switch">
+                    <input id="show-only-last-heartbeat" v-model="config.showOnlyLastHeartbeat" class="form-check-input" type="checkbox">
+                    <label class="form-check-label" for="show-only-last-heartbeat">{{ $t("showOnlyLastHeartbeat") }}</label>
                 </div>
 
                 <!-- Domain Name List -->
@@ -92,10 +93,36 @@
                     </ul>
                 </div>
 
-                <!-- Google Analytics -->
+                <!-- Analytics -->
+
                 <div class="my-3">
-                    <label for="googleAnalyticsTag" class="form-label">{{ $t("Google Analytics ID") }}</label>
-                    <input id="googleAnalyticsTag" v-model="config.googleAnalyticsId" type="text" class="form-control" data-testid="google-analytics-input">
+                    <label for="analyticsType" class="form-label">{{ $t("Analytics Type") }}</label>
+                    <select id="analyticsType" v-model="config.analyticsType" class="form-select" data-testid="analytics-type-select">
+                        <option>{{ $t("None") }}</option>
+                        <option value="google">{{ $t("Google") }}</option>
+                        <option value="umami">{{ $t("Umami") }}</option>
+                        <option value="plausible">{{ $t("Plausible") }}</option>
+                        <option value="matomo">{{ $t("Matomo") }}</option>
+                    </select>
+                </div>
+
+                <div v-if="!!config.analyticsType" class="my-3">
+                    <label for="analyticsId" class="form-label">{{ $t("Analytics ID") }}</label>
+                    <input id="analyticsId" v-model="config.analyticsId" type="text" class="form-control" data-testid="analytics-id-input">
+                </div>
+
+                <div v-if="!!config.analyticsType && config.analyticsType !== 'google'" class="my-3">
+                    <label for="analyticsScriptUrl" class="form-label">{{ $t("Analytics Script URL") }}</label>
+                    <input id="analyticsScriptUrl" v-model="config.analyticsScriptUrl" type="url" class="form-control" data-testid="analytics-script-url-input">
+                </div>
+
+                <!-- RSS Title -->
+                <div class="my-3">
+                    <label for="rss-title" class="form-label">{{ $t("RSS Title") }}</label>
+                    <input id="rss-title" v-model="config.rssTitle" type="text" class="form-control" data-testid="rss-title-input">
+                    <div class="form-text">
+                        {{ $t("Leave blank to use status page title") }}
+                    </div>
                 </div>
 
                 <!-- Custom CSS -->
@@ -132,6 +159,9 @@
             <h1 class="mb-4 title-flex">
                 <!-- Logo -->
                 <span class="logo-wrapper" @click="showImageCropUploadMethod">
+                    <button v-if="editMode" type="button" class="p-0 bg-transparent border-0 small-reset-btn reset-top-left" @click.stop="resetToDefaultImage">
+                        <font-awesome-icon icon="times" class="text-danger" />
+                    </button>
                     <img :src="logoURL" alt class="logo me-2" :class="logoClass" />
                     <font-awesome-icon v-if="enableEditMode" class="icon-upload" icon="upload" />
                 </span>
@@ -155,14 +185,14 @@
             </h1>
 
             <!-- Admin functions -->
-            <div v-if="hasToken" class="mb-4">
+            <div v-if="hasToken" class="mb-2">
                 <div v-if="!enableEditMode">
-                    <button class="btn btn-primary me-2" data-testid="edit-button" @click="edit">
+                    <button class="btn btn-primary mb-2 me-2" data-testid="edit-button" @click="edit">
                         <font-awesome-icon icon="edit" />
                         {{ $t("Edit Status Page") }}
                     </button>
 
-                    <a href="/manage-status-page" class="btn btn-primary">
+                    <a href="/manage-status-page" class="btn btn-primary mb-2">
                         <font-awesome-icon icon="tachometer-alt" />
                         {{ $t("Go to Dashboard") }}
                     </a>
@@ -186,8 +216,9 @@
                 <div v-if="editIncidentMode" class="form-text">
                     {{ $t("markdownSupported") }}
                 </div>
-                <!-- eslint-disable-next-line vue/no-v-html-->
+                <!-- eslint-disable vue/no-v-html-->
                 <div v-if="! editIncidentMode" class="content" data-testid="incident-content" v-html="incidentHTML"></div>
+                <!-- eslint-enable vue/no-v-html-->
 
                 <!-- Incident Date -->
                 <div class="date mt-3">
@@ -284,8 +315,9 @@
             <!-- Description -->
             <strong v-if="editMode">{{ $t("Description") }}:</strong>
             <Editable v-if="enableEditMode" v-model="config.description" :contenteditable="editMode" tag="div" class="mb-4 description" data-testid="description-editable" />
-            <!-- eslint-disable-next-line vue/no-v-html-->
+            <!-- eslint-disable vue/no-v-html-->
             <div v-if="! enableEditMode" class="alert-heading p-2" data-testid="description" v-html="descriptionHTML"></div>
+            <!-- eslint-enable vue/no-v-html-->
 
             <div v-if="editMode" class="mb-4">
                 <div>
@@ -328,7 +360,7 @@
                     👀 {{ $t("statusPageNothing") }}
                 </div>
 
-                <PublicGroupList :edit-mode="enableEditMode" :show-tags="config.showTags" :show-certificate-expiry="config.showCertificateExpiry" />
+                <PublicGroupList :edit-mode="enableEditMode" :show-tags="config.showTags" :show-certificate-expiry="config.showCertificateExpiry" :show-only-last-heartbeat="config.showOnlyLastHeartbeat" />
             </div>
 
             <footer class="mt-5 mb-4">
@@ -336,8 +368,9 @@
                     <strong v-if="enableEditMode">{{ $t("Custom Footer") }}:</strong>
                 </div>
                 <Editable v-if="enableEditMode" v-model="config.footerText" tag="div" :contenteditable="enableEditMode" :noNL="false" class="alert-heading p-2" data-testid="custom-footer-editable" />
-                <!-- eslint-disable-next-line vue/no-v-html-->
+                <!-- eslint-disable vue/no-v-html-->
                 <div v-if="! enableEditMode" class="alert-heading p-2" data-testid="footer-text" v-html="footerHTML"></div>
+                <!-- eslint-enable vue/no-v-html-->
 
                 <p v-if="config.showPoweredBy" data-testid="powered-by">
                     {{ $t("Powered by") }} <a target="_blank" rel="noopener noreferrer" href="https://github.com/louislam/uptime-kuma">{{ $t("Uptime Kuma" ) }}</a>
@@ -957,6 +990,20 @@ export default {
         },
 
         /**
+         * Reset logo image to default (public/icon.svg)
+         * @returns {void}
+         */
+        resetToDefaultImage() {
+            if (! this.editMode) {
+                return;
+            }
+
+            this.imgDataUrl = "/icon.svg";
+            this.config.icon = this.imgDataUrl;
+            toast.success(this.$t("imageResetConfirmation"));
+        },
+
+        /**
          * Create an incident for this status page
          * @returns {void}
          */
@@ -1174,6 +1221,58 @@ footer {
         border-radius: 10px;
         cursor: pointer;
         box-shadow: 0 15px 70px rgba(0, 0, 0, 0.9);
+    }
+
+    /* Reset button placed at top-left of the logo */
+    .reset-top-left {
+        position: absolute;
+        top: 0;
+        left: -15px;
+        z-index: 2;
+        width: 20px;
+        height: 20px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        background: white;
+        border: none;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+        cursor: pointer;
+        padding: 0;
+        transition: transform $easing-in 0.18s, box-shadow $easing-in 0.18s, background-color $easing-in 0.18s;
+        transform-origin: center;
+
+        &:hover {
+            background-color: rgba(0, 0, 0, 0.06);
+            transform: scale(1.18);
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+        }
+
+        &:hover ~ .icon-upload {
+            transform: none !important;
+        }
+    }
+
+    .small-reset-btn {
+        transition: transform $easing-in 0.18s, box-shadow $easing-in 0.18s, background-color $easing-in 0.18s;
+        font-size: 18px;
+        width: 18px;
+        height: 18px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        background: transparent;
+        border: none;
+        cursor: pointer;
+
+        &:hover {
+            background-color: rgba(0, 0, 0, 0.04);
+            transform: scale(1.18);
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+        }
     }
 }
 
