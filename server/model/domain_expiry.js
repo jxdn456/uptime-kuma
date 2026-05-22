@@ -2,39 +2,104 @@ const { BeanModel } = require("redbean-node/dist/bean-model");
 const { R } = require("redbean-node");
 const { log, TYPES_WITH_DOMAIN_EXPIRY_SUPPORT_VIA_FIELD } = require("../../src/util");
 const { parse: parseTld } = require("tldts");
-const { getDaysRemaining, getDaysBetween, setting, setSetting } = require("../util-server");
+const { setting, setSetting } = require("../util-server");
 const { Notification } = require("../notification");
-const { default: NodeFetchCache, MemoryCache } = require("node-fetch-cache");
 const TranslatableError = require("../translatable-error");
+const dayjs = require("dayjs");
+const { Settings } = require("../settings");
 
-const cachedFetch = process.env.NODE_ENV ? NodeFetchCache.create({
-    // cache for 8h
-    cache: new MemoryCache({ ttl: 1000 * 60 * 60 * 8 })
-}) : fetch;
+let cacheRdapDnsData = null;
+let nextChecking = 0;
+let running = false;
 
 /**
  * Find the RDAP server for a given TLD
  * @param {string} tld TLD
- * @returns {Promise<string>} First RDAP server found
+ * @returns {string|null} First RDAP server found
  */
 async function getRdapServer(tld) {
-    let rdapList;
-    try {
-        const res = await cachedFetch("https://data.iana.org/rdap/dns.json");
-        rdapList = await res.json();
-    } catch (error) {
-        log.debug("rdap", error);
-        return null;
-    }
-
-    for (const service of rdapList["services"]) {
-        const [ tlds, urls ] = service;
-        if (tlds.includes(tld)) {
-            return urls[0];
+    const rdapDnsData = await getRdapDnsData();
+    const services = rdapDnsData["services"] ?? [];
+    const rootTld = tld?.split(".").pop();
+    if (rootTld) {
+        for (const [tlds, urls] of services) {
+            if (tlds.includes(rootTld)) {
+                return urls[0];
+            }
         }
     }
     log.debug("rdap", `No RDAP server found for TLD ${tld}`);
     return null;
+}
+
+/**
+ * Get RDAP DNS data from IANA and save to Setting
+ * @returns {Promise<{}>} RDAP DNS data
+ */
+async function getRdapDnsData() {
+    // Cache for one week
+    if (cacheRdapDnsData && Date.now() < nextChecking) {
+        return cacheRdapDnsData;
+    }
+
+    // Avoid multiple simultaneous updates
+    // Use older data first if another update is in progress
+    if (running) {
+        return await getOfflineRdapDnsData();
+    }
+
+    try {
+        running = true;
+        log.info("rdap", "Updating RDAP DNS data from IANA...");
+        const response = await fetch("https://data.iana.org/rdap/dns.json");
+        if (!response.ok) {
+            throw new Error(`HTTP error: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        // Simple validation
+        if (!data.services || !Array.isArray(data.services)) {
+            throw new Error("Invalid RDAP DNS data structure");
+        }
+
+        cacheRdapDnsData = data;
+
+        // Next week
+        nextChecking = Date.now() + 7 * 24 * 60 * 60 * 1000;
+        await Settings.set("rdapDnsData", data);
+        log.info("rdap", "RDAP DNS data updated successfully. Number of services: " + data.services.length);
+    } catch (error) {
+        log.info("rdap", `Uable to update RDAP DNS data from source: ${error.message}`);
+        cacheRdapDnsData = await getOfflineRdapDnsData();
+
+        // Check again next day
+        nextChecking = Date.now() + 24 * 60 * 60 * 1000;
+    }
+
+    running = false;
+    return cacheRdapDnsData;
+}
+
+/**
+ * Get RDAP DNS data from Setting or hardcoded file as fallback
+ * Fail safe
+ * @returns {Promise<{}>} RDAP DNS data
+ */
+async function getOfflineRdapDnsData() {
+    let data = null;
+    try {
+        data = await Settings.get("rdapDnsData");
+
+        // Simple validation
+        if (!data.services || !Array.isArray(data.services)) {
+            throw new Error("Invalid RDAP DNS data structure");
+        }
+    } catch (e) {
+        // If not downloaded previously, use the hardcoded data
+        data = require("../../extra/rdap-dns.json");
+    }
+    return data;
 }
 
 /**
@@ -108,7 +173,7 @@ class DomainExpiry extends BeanModel {
      * @returns {Promise<DomainExpiry>} Domain bean
      */
     static async findByName(domain) {
-        return R.findOne("domain_expiry", "domain = ?", [ domain ]);
+        return R.findOne("domain_expiry", "domain = ?", [domain]);
     }
 
     /**
@@ -155,35 +220,27 @@ class DomainExpiry extends BeanModel {
 
         const tld = parseTld(target);
 
-        // Avoid logging for incomplete/invalid input while editing monitors.
-        if (!tld.domain) {
-            throw new TranslatableError("domain_expiry_unsupported_invalid_domain", { hostname: tld.hostname });
-        }
-        if ( !tld.publicSuffix) {
-            throw new TranslatableError("domain_expiry_unsupported_public_suffix", { publicSuffix: tld.publicSuffix });
-        }
-        if (tld.isIp) {
-            throw new TranslatableError("domain_expiry_unsupported_is_ip", { hostname: tld.hostname });
+        // It must be checked first, filter out non-ICANN domains.
+        if (!tld.isIcann) {
+            throw new TranslatableError("domain_expiry_unsupported_is_icann", {
+                // If domain is null, use hostname as fallback for better error message.
+                domain: tld.domain ?? tld.hostname ?? "EMPTY DOMAIN",
+                publicSuffix: tld.publicSuffix,
+            });
         }
 
-        // No one-letter public suffix exists; treat this as an incomplete/invalid input while typing.
-        if (tld.publicSuffix.length < 2) {
-            throw new TranslatableError("domain_expiry_public_suffix_too_short", { publicSuffix: tld.publicSuffix });
-        }
-
-        const rdap = await getRdapServer(tld.publicSuffix);
+        const publicSuffix = tld.publicSuffix;
+        const rootTld = publicSuffix.split(".").pop();
+        const rdap = await getRdapServer(publicSuffix);
         if (!rdap) {
-            // Only warn when the monitor actually has domain expiry notifications enabled.
-            // The edit monitor page calls this method frequently while the user is typing.
-            if (Boolean(monitor.domainExpiryNotification)) {
-                log.warn("domain_expiry", `Domain expiry unsupported for '.${tld.publicSuffix}' because its RDAP endpoint is not listed in the IANA database.`);
-            }
-            throw new TranslatableError("domain_expiry_unsupported_unsupported_tld_no_rdap_endpoint", { publicSuffix: tld.publicSuffix });
+            throw new TranslatableError("domain_expiry_unsupported_unsupported_tld_no_rdap_endpoint", {
+                publicSuffix,
+            });
         }
 
         return {
             domain: tld.domain,
-            tld: tld.publicSuffix,
+            tld: rootTld,
         };
     }
 
@@ -192,18 +249,18 @@ class DomainExpiry extends BeanModel {
      * @returns {Promise<DomainExpiry>} Domain expiry bean
      */
     static async findByDomainNameOrCreate(domainName) {
-        const existing = await DomainExpiry.findByName(domainName);
-        if (existing) {
-            return existing;
+        let domain = await DomainExpiry.findByName(domainName);
+        if (!domain && domainName) {
+            domain = await DomainExpiry.createByName(domainName);
         }
-        return DomainExpiry.createByName(domainName);
+        return domain;
     }
 
     /**
      * @returns {number} number of days remaining before expiry
      */
     get daysRemaining() {
-        return getDaysRemaining(new Date(), new Date(this.expiry));
+        return dayjs.utc(this.expiry).diff(dayjs.utc(), "day");
     }
 
     /**
@@ -220,20 +277,20 @@ class DomainExpiry extends BeanModel {
      */
     static async checkExpiry(domainName) {
         let bean = await DomainExpiry.findByDomainNameOrCreate(domainName);
-
         let expiryDate;
-        if (bean?.lastCheck && getDaysBetween(new Date(bean.lastCheck), new Date()) < 1) {
+
+        if (bean?.lastCheck && dayjs.utc().diff(dayjs.utc(bean.lastCheck), "day") < 1) {
             log.debug("domain_expiry", `Domain expiry already checked recently for ${bean.domain}, won't re-check.`);
             return bean.expiry;
         } else if (bean) {
             expiryDate = await bean.getExpiryDate();
 
-            if (new Date(expiryDate) > new Date(bean.expiry)) {
+            if (dayjs.utc(expiryDate).isAfter(dayjs.utc(bean.expiry))) {
                 bean.lastExpiryNotificationSent = null;
             }
 
-            bean.expiry = expiryDate;
-            bean.lastCheck = new Date();
+            bean.expiry = R.isoDateTimeMillis(expiryDate);
+            bean.lastCheck = R.isoDateTimeMillis(dayjs.utc());
             await R.store(bean);
         }
 
@@ -258,19 +315,22 @@ class DomainExpiry extends BeanModel {
         }
         // sanity check if expiry date is valid before calculating days remaining. Should not happen and likely indicates a bug in the code.
         if (!domain.expiry || isNaN(new Date(domain.expiry).getTime())) {
-            log.warn("domain_expiry", `No valid expiry date passed to sendNotifications for ${domainName} (expiry: ${domain.expiry}), skipping notification`);
+            log.warn(
+                "domain_expiry",
+                `No valid expiry date passed to sendNotifications for ${domainName} (expiry: ${domain.expiry}), skipping notification`
+            );
             return;
         }
 
-        const daysRemaining = getDaysRemaining(new Date(), domain.expiry);
+        const daysRemaining = domain.daysRemaining;
         const lastSent = domain.lastExpiryNotificationSent;
         log.debug("domain_expiry", `${domainName} expires in ${daysRemaining} days`);
 
         let notifyDays = await setting("domainExpiryNotifyDays");
         if (notifyDays == null || !Array.isArray(notifyDays)) {
             // Reset Default
-            await setSetting("domainExpiryNotifyDays", [ 7, 14, 21 ], "general");
-            notifyDays = [ 7, 14, 21 ];
+            await setSetting("domainExpiryNotifyDays", [7, 14, 21], "general");
+            notifyDays = [7, 14, 21];
         }
         if (Array.isArray(notifyDays)) {
             // Asc sort to avoid sending multiple notifications if daysRemaining is below multiple targetDays

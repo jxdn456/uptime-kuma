@@ -1,3 +1,6 @@
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+
 const pkg = require("../package.json");
 const fs = require("fs");
 const childProcess = require("child_process");
@@ -5,44 +8,43 @@ const util = require("../src/util");
 
 util.polyfill();
 
-const newVersion = process.env.RELEASE_VERSION;
+const version = process.env.RELEASE_VERSION;
 
-console.log("New Version: " + newVersion);
+console.log("New Version: " + version);
 
-if (! newVersion) {
+if (!version) {
     console.error("invalid version");
     process.exit(1);
 }
 
-const exists = tagExists(newVersion);
+const exists = tagExists(version);
 
-if (! exists) {
-
+if (!exists) {
     // Process package.json
-    pkg.version = newVersion;
+    pkg.version = version;
 
     // Replace the version: https://regex101.com/r/hmj2Bc/1
-    pkg.scripts.setup = pkg.scripts.setup.replace(/(git checkout )([^\s]+)/, `$1${newVersion}`);
+    pkg.scripts.setup = pkg.scripts.setup.replace(/(git checkout )([^\s]+)/, `$1${version}`);
     fs.writeFileSync("package.json", JSON.stringify(pkg, null, 4) + "\n");
 
     // Also update package-lock.json
     const npm = /^win/.test(process.platform) ? "npm.cmd" : "npm";
-    const resultVersion = childProcess.spawnSync(npm, [ "--no-git-tag-version", "version", newVersion ], { shell: true });
+    const resultVersion = childProcess.spawnSync(npm, ["--no-git-tag-version", "version", version], { shell: true });
     if (resultVersion.error) {
         console.error(resultVersion.error);
         console.error("error npm version!");
         process.exit(1);
     }
-    const resultInstall = childProcess.spawnSync(npm, [ "install" ], { shell: true });
+    const resultInstall = childProcess.spawnSync(npm, ["install"], { shell: true });
     if (resultInstall.error) {
         console.error(resultInstall.error);
         console.error("error update package-lock!");
         process.exit(1);
     }
-    commit(newVersion);
-
+    commit(version);
 } else {
-    console.log("version exists");
+    console.log("version tag exists, please delete the tag or use another tag");
+    process.exit(1);
 }
 
 /**
@@ -54,13 +56,21 @@ if (! exists) {
 function commit(version) {
     let msg = "Update to " + version;
 
-    let res = childProcess.spawnSync("git", [ "commit", "-m", msg, "-a" ]);
+    let res = childProcess.spawnSync("git", ["commit", "-m", msg, "-a"]);
     let stdout = res.stdout.toString().trim();
     console.log(stdout);
 
     if (stdout.includes("no changes added to commit")) {
         throw new Error("commit error");
     }
+
+    // Get the current branch name
+    res = childProcess.spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
+    let branchName = res.stdout.toString().trim();
+    console.log("Current branch:", branchName);
+
+    // Git push the branch
+    childProcess.spawnSync("git", ["push", "origin", branchName, "--force"], { stdio: "inherit" });
 }
 
 /**
@@ -70,11 +80,11 @@ function commit(version) {
  * @throws Version is not valid
  */
 function tagExists(version) {
-    if (! version) {
+    if (!version) {
         throw new Error("invalid version");
     }
 
-    let res = childProcess.spawnSync("git", [ "tag", "-l", version ]);
+    let res = childProcess.spawnSync("git", ["tag", "-l", version]);
 
     return res.stdout.toString().trim() === version;
 }
